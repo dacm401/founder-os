@@ -3,9 +3,9 @@
  * 完整功能：读取飞书日历 -> AI分析 -> 飞书推送
  */
 
-import { CalendarEvent, AnalysisResult } from './types'
-import { analyzeCalendar, checkHealth } from './ai/analyzer'
-import { sendStarredEventsNotification, sendHealthCheckReminder } from './notifier/feishu'
+import { CalendarEvent, AnalysisResult } from './types.js'
+import { analyzeCalendar, checkHealth } from './ai/analyzer.js'
+import { sendStarredEventsNotification, sendHealthCheckReminder } from './notifier/feishu.js'
 
 // 飞书日历 ID
 const FEISHU_CALENDAR_ID = 'feishu.cn_CWNI6VtVtwHeLBp3qRIAof@group.calendar.feishu.cn'
