@@ -1,0 +1,35 @@
+{
+  "name": "founder-os",
+  "version": "1.0.0",
+  "description": "FounderOS - 创始人日程智能助手 AI 驱动的日程避坑指南",
+  "main": "dist/app.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/app.js",
+    "dev": "npm run build && node dist/app.js",
+    "cli": "npm run build && node dist/cli.js"
+  },
+  "keywords": [
+    "founder",
+    "calendar",
+    "ai",
+    "coach",
+    "feishu",
+    "startup"
+  ],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.81.0",
+    "dotenv": "^16.6.1",
+    "node-fetch": "^3.3.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "typescript": "^5.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
