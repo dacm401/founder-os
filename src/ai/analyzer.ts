@@ -1,10 +1,16 @@
 import { CalendarEvent, AnalysisResult } from '../types'
-import Anthropic from '@anthropic-ai/sdk'
+import OpenAI from 'openai'
 
-// 初始化 Anthropic 客户端
-const anthropic = new Anthropic({
-  apiKey: process.env.ANTHROPIC_API_KEY || '',
-})
+// 初始化大模型客户端（支持 OpenAI 兼容格式）
+function getOpenAIClient() {
+  const apiKey = process.env.OPENAI_API_KEY || process.env.SILICONFLOW_API_KEY
+  const baseURL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1'
+  
+  return new OpenAI({
+    apiKey: apiKey || 'dummy-key',
+    baseURL
+  })
+}
 
 /**
  * 生成智能分析 Prompt
@@ -81,19 +87,20 @@ async function analyzeWithAI(event: CalendarEvent): Promise<AnalysisResult> {
   const prompt = buildAnalysisPrompt(event)
   
   try {
-    const response = await anthropic.messages.create({
-      model: 'claude-3-haiku-20240307',
-      max_tokens: 500,
-      temperature: 0.7,
-      system: '你是一个专注于创始人成长的AI助手，擅长分析日程对创始人的影响，给出有洞察的建议。',
+    const client = getOpenAIClient()
+    
+    const response = await client.chat.completions.create({
+      model: process.env.AI_MODEL || 'Qwen/Qwen2.5-7B-Instruct',
       messages: [
+        { role: 'system', content: '你是一个专注于创始人成长的AI助手，擅长分析日程对创始人的影响，给出有洞察的建议。直接返回JSON。' },
         { role: 'user', content: prompt }
-      ]
+      ],
+      temperature: 0.7,
+      max_tokens: 500,
+      response_format: { type: 'json_object' }
     })
     
-    const text = response.content[0].type === 'text' 
-      ? response.content[0].text 
-      : ''
+    const text = response.choices[0]?.message?.content || ''
     
     const result = parseAIResponse(text)
     
@@ -134,8 +141,9 @@ function generateDefaultAnalysis(event: CalendarEvent): AnalysisResult {
  */
 export async function analyzeEvent(event: CalendarEvent, knowledgeBase?: string): Promise<AnalysisResult> {
   // 检查是否有 API Key
-  if (!process.env.ANTHROPIC_API_KEY) {
-    console.warn('未配置 ANTHROPIC_API_KEY，使用默认分析')
+  const apiKey = process.env.OPENAI_API_KEY || process.env.SILICONFLOW_API_KEY
+  if (!apiKey) {
+    console.warn('未配置 OPENAI_API_KEY 或 SILICONFLOW_API_KEY，使用默认分析')
     return generateDefaultAnalysis(event)
   }
   
