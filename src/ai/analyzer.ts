@@ -17,12 +17,22 @@ function parseKnowledgeBase(markdown: string): CategoryRule[] {
   
   // 简单的分类解析
   const categories = [
-    { id: 'fundraising', name: '融资相关', keywords: ['融资', '投资人', 'BP', 'Term', 'Sheet', '路演', '尽调', '投资协议', '投资'] },
-    { id: 'legal', name: '法律相关', keywords: ['律师', '股权', '合同', '法律', '合规', '知识产权'] },
-    { id: 'hiring', name: '招聘相关', keywords: ['面试', '招聘', 'offer', '入职', '团队成员'] },
-    { id: 'sales', name: '销售/客户相关', keywords: ['客户', '签约', '销售', '商务', '晚饭', '饭局'] },
-    { id: 'product', name: '产品相关', keywords: ['产品', '评审', '路线图', '技术', '设计'] },
-    { id: 'team', name: '团队相关', keywords: ['团队', '例会', '1:1', '周会', '月会'] }
+    // 融资相关
+    { id: 'fundraising', name: '融资相关', keywords: ['融资', '投资人', 'BP', 'Term', 'Sheet', '路演', '尽调', '投资协议', '投资', '估值', '稀释', '领投', '跟投', 'FA'] },
+    // 法律相关
+    { id: 'legal', name: '法律相关', keywords: ['律师', '股权', '合同', '法律', '合规', '知识产权', '商标', '专利', '著作权', 'VIE', '架构', '清算'] },
+    // 招聘相关
+    { id: 'hiring', name: '招聘相关', keywords: ['面试', '招聘', 'offer', '入职', '团队成员', 'COO', 'CTO', 'CFO', 'VP', '总监', '裁员', '离职'] },
+    // 销售/客户相关
+    { id: 'sales', name: '销售/客户相关', keywords: ['客户', '签约', '销售', '商务', '晚饭', '饭局', '回款', '应收账款', '招投标', '报价'] },
+    // 产品相关
+    { id: 'product', name: '产品相关', keywords: ['产品', '评审', '路线图', '技术', '设计', 'API', '架构', '重构', '上线', '发版', 'Bug', '技术债'] },
+    // 团队相关
+    { id: 'team', name: '团队相关', keywords: ['团队', '例会', '1:1', '周会', '月会', '全员会', '复盘', '团建'] },
+    // 财务相关（新增）
+    { id: 'finance', name: '财务相关', keywords: ['财务', '会计', '税务', '预算', '融资', '银行', '贷款', '现金流', '工资', '报销'] },
+    // 个人成长（新增）
+    { id: 'personal', name: '个人成长', keywords: ['学习', '读书', '培训', '教练', '导师', '顾问', '高尔夫', '健身', '冥想'] }
   ]
   
   const importanceMap: Record<string, { min: number; max: number }> = {
@@ -31,7 +41,9 @@ function parseKnowledgeBase(markdown: string): CategoryRule[] {
     hiring: { min: 80, max: 90 },
     sales: { min: 80, max: 90 },
     product: { min: 75, max: 85 },
-    team: { min: 70, max: 80 }
+    team: { min: 70, max: 80 },
+    finance: { min: 75, max: 90 },
+    personal: { min: 60, max: 75 }
   }
   
   const tips: Record<string, { brief: string; detailed: string; encourage: string }> = {
@@ -64,6 +76,16 @@ function parseKnowledgeBase(markdown: string): CategoryRule[] {
       brief: '团队会议保持信息同步。但注意别让会议本身成为工作。',
       detailed: '团队例会的目的是信息同步和问题解决，不是汇报工作。建议：1）控制时间；2）鼓励发现问题；3）重要决策要明确；4）会后要有明确行动项。',
       encourage: '团队是你最宝贵的资产。好的团队例会能让大家更有方向感和凝聚力。'
+    },
+    finance: {
+      brief: '财务会议关系到公司命脉。现金流是企业的血液。',
+      detailed: '创始人必须懂财务：1）现金流比利润更重要；2）预算要量入为出；3）税务合规是底线；4）融资节奏要匹配业务发展。建议每月至少与财务深入沟通一次。',
+      encourage: '管好财务就是管好公司的命脉。不懂就问，这是你的责任。'
+    },
+    personal: {
+      brief: '创始人需要持续充电。身体是革命的本钱。',
+      detailed: '创始人往往是公司最稀缺的资源，你的状态决定公司的高度。建议：1）保持运动习惯；2）定期读书学习；3）建立导师/教练关系；4）给自己留出思考时间。',
+      encourage: '你很重要。你的身体、你的思维、你的状态，都是公司的资产。好好照顾自己。'
     }
   }
   
@@ -190,12 +212,14 @@ export function checkHealth(events: CalendarEvent[], days: number = 7): HealthRe
       const title = event.title
       let category = 'other'
       
-      if (title.includes('融资') || title.includes('投资') || title.includes('BP')) category = 'fundraising'
-      else if (title.includes('律师') || title.includes('股权') || title.includes('法律')) category = 'legal'
-      else if (title.includes('面试') || title.includes('招聘') || title.includes('offer')) category = 'hiring'
-      else if (title.includes('客户') || title.includes('签约') || title.includes('销售')) category = 'sales'
-      else if (title.includes('产品') || title.includes('评审') || title.includes('路线图')) category = 'product'
-      else if (title.includes('团队') || title.includes('例会') || title.includes('1:1')) category = 'team'
+      if (title.includes('融资') || title.includes('投资') || title.includes('BP') || title.includes('FA')) category = 'fundraising'
+      else if (title.includes('律师') || title.includes('股权') || title.includes('法律') || title.includes('架构')) category = 'legal'
+      else if (title.includes('面试') || title.includes('招聘') || title.includes('offer') || title.includes('裁员')) category = 'hiring'
+      else if (title.includes('客户') || title.includes('签约') || title.includes('销售') || title.includes('回款')) category = 'sales'
+      else if (title.includes('产品') || title.includes('评审') || title.includes('路线图') || title.includes('技术债')) category = 'product'
+      else if (title.includes('团队') || title.includes('例会') || title.includes('1:1') || title.includes('团建')) category = 'team'
+      else if (title.includes('财务') || title.includes('税务') || title.includes('预算') || title.includes('现金流')) category = 'finance'
+      else if (title.includes('学习') || title.includes('健身') || title.includes('教练')) category = 'personal'
       
       categoryCount[category] = (categoryCount[category] || 0) + 1
       totalEvents++
@@ -230,6 +254,18 @@ export function checkHealth(events: CalendarEvent[], days: number = 7): HealthRe
   if (!categoryCount['product'] && totalEvents > 3) {
     issues.push('⚠️ 你最近没有产品相关的会议')
     suggestions.push('💡 产品是公司的根本，建议至少每两周安排一次产品评审。')
+  }
+  
+  // 新增：财务检查
+  if (!categoryCount['finance'] && totalEvents > 5) {
+    issues.push('⚠️ 你最近没有与财务相关的会议')
+    suggestions.push('💡 建议每月至少与财务深入沟通一次，关注现金流。')
+  }
+  
+  // 新增：个人成长检查
+  if (!categoryCount['personal'] && totalEvents > 10) {
+    issues.push('⚠️ 你最近没有安排个人成长/休息时间')
+    suggestions.push('💡 创始人需要持续充电，建议每周安排至少2小时的学习/运动时间。')
   }
   
   const score = Math.max(0, 100 - issues.length * 20)
