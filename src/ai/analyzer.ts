@@ -1,189 +1,181 @@
 import { CalendarEvent, AnalysisResult } from '../types'
+import Anthropic from '@anthropic-ai/sdk'
 
-interface CategoryRule {
-  category: string
-  keywords: string[]
-  importanceRange: { min: number; max: number }
-  briefTip: string
-  detailedExplanation: string
-  encouragement: string
+// 初始化 Anthropic 客户端
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY || '',
+})
+
+/**
+ * 生成智能分析 Prompt
+ */
+function buildAnalysisPrompt(event: CalendarEvent): string {
+  const title = event.title || '无标题'
+  const description = event.description || '无描述'
+  const startTime = new Date(event.startTime).toLocaleString('zh-CN', { 
+    weekday: 'long', 
+    year: 'numeric', 
+    month: 'long', 
+    day: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit'
+  })
+
+  return `你是FounderOS，一个专注于创始人成长的AI助手。
+
+## 创始人背景
+- 科技行业创业者，技术出身
+- 刚拿到融资，需要注意股权稀释和团队扩张
+- 关注产品优先级和商业化
+
+## 日程信息
+- 标题：${title}
+- 时间：${startTime}
+- 描述：${description}
+
+## 任务
+请分析这个日程，生成JSON格式的智能提醒：
+
+{
+  "importance": 评分(0-100),
+  "category": "分类(fundraising/legal/hiring/sales/product/team/finance/personal/other)",
+  "briefTip": "一句话提醒(不超过20字)",
+  "detailedExplanation": "详细建议(50-100字，针对这个具体日程)",
+  "encouragement": "一句鼓励的话"
+}
+
+注意：
+- 直接返回JSON，不要其他内容
+- 如果日程信息太少无法分析，category设为"other"，importance设为50
+- 建议要具体针对这个日程，不要泛泛而谈
+- 风格：直接、有洞察、不说废话`
 }
 
 /**
- * 解析知识库文档，提取分类规则
+ * 解析大模型返回的 JSON
  */
-function parseKnowledgeBase(markdown: string): CategoryRule[] {
-  const rules: CategoryRule[] = []
-  
-  // 简单的分类解析
-  const categories = [
-    // 融资相关
-    { id: 'fundraising', name: '融资相关', keywords: ['融资', '投资人', 'BP', 'Term', 'Sheet', '路演', '尽调', '投资协议', '投资', '估值', '稀释', '领投', '跟投', 'FA'] },
-    // 法律相关
-    { id: 'legal', name: '法律相关', keywords: ['律师', '股权', '合同', '法律', '合规', '知识产权', '商标', '专利', '著作权', 'VIE', '架构', '清算'] },
-    // 招聘相关
-    { id: 'hiring', name: '招聘相关', keywords: ['面试', '招聘', 'offer', '入职', '团队成员', 'COO', 'CTO', 'CFO', 'VP', '总监', '裁员', '离职'] },
-    // 销售/客户相关
-    { id: 'sales', name: '销售/客户相关', keywords: ['客户', '签约', '销售', '商务', '晚饭', '饭局', '回款', '应收账款', '招投标', '报价'] },
-    // 产品相关
-    { id: 'product', name: '产品相关', keywords: ['产品', '评审', '路线图', '技术', '设计', 'API', '架构', '重构', '上线', '发版', 'Bug', '技术债'] },
-    // 团队相关
-    { id: 'team', name: '团队相关', keywords: ['团队', '例会', '1:1', '周会', '月会', '全员会', '复盘', '团建'] },
-    // 财务相关（新增）
-    { id: 'finance', name: '财务相关', keywords: ['财务', '会计', '税务', '预算', '融资', '银行', '贷款', '现金流', '工资', '报销'] },
-    // 个人成长（新增）
-    { id: 'personal', name: '个人成长', keywords: ['学习', '读书', '培训', '教练', '导师', '顾问', '高尔夫', '健身', '冥想'] }
-  ]
-  
-  const importanceMap: Record<string, { min: number; max: number }> = {
-    fundraising: { min: 85, max: 95 },
-    legal: { min: 80, max: 90 },
-    hiring: { min: 80, max: 90 },
-    sales: { min: 80, max: 90 },
-    product: { min: 75, max: 85 },
-    team: { min: 70, max: 80 },
-    finance: { min: 75, max: 90 },
-    personal: { min: 60, max: 75 }
-  }
-  
-  const tips: Record<string, { brief: string; detailed: string; encourage: string }> = {
-    fundraising: {
-      brief: '这是融资关键节点。提前准备估值策略、投资人常见问题、你的核心优势。',
-      detailed: '融资是公司的"生死线"。投资人常问：技术壁垒、市场空间、团队优势、竞争格局、财务预测。建议准备3个版本：30秒版（电梯演讲）、3分钟版（详细阐述）、技术版（深入细节）。了解投资人的投资风格和近期动态会让对话更顺畅。',
-      encourage: '投资人见多了项目，你有你的独特优势。准备充分，从容应对。你不是在"求人"，是在找合作伙伴。'
-    },
-    legal: {
-      brief: '法律/股权会议很重要，现在的决策会影响未来3-5年。建议充分准备想清楚的问题。',
-      detailed: '股权是公司的"宪法"，一旦定下来再改很难。常见坑：创始人平均分股权（没有决策核心）、不设vesting（有人early exit其他人被动）、期权池太小。律师是服务方，不是决策方。你要有主见，每个条款问"为什么这样设计，有其他选择吗"。',
-      encourage: '股权设计是公司的宪法，现在多花1小时想清楚，未来少100个麻烦。你是创始人，要有主见。'
-    },
-    hiring: {
-      brief: '招聘是关键决策，选错人成本很高（6-12个月工资+团队士气影响）。仔细考察。',
-      detailed: '第一个非技术岗位招聘很重要。助理/行政看似简单但影响你50%的时间质量。面试要点：1）考察细心和靠谱；2）问行为问题；3）必须做背景调查；4）设置3个月试用期，明确考核标准。',
-      encourage: 'Hire slow, fire fast。这个岗位不直接创造收入，但影响你50%的时间质量。宁缺毋滥。'
-    },
-    sales: {
-      brief: '客户相关日程直接关系到收入。提前准备产品价值主张和客户可能的问题。',
-      detailed: '与客户/潜在客户见面是商业拓展的关键。准备要点：1）明确你的核心价值；2）了解客户背景；3）准备好成功案例；4）设定本次目标。第一次别急着卖，先建立信任。',
-      encourage: '每一次与客户的交流都是建立信任的机会。真诚、专业、不卑不亢。'
-    },
-    product: {
-      brief: '产品会议是公司方向的核心。建议确保会议有明确产出。',
-      detailed: '产品路线图评审决定未来3-6个月的技术方向和资源分配。常见问题：需求太多做不过来（需要优先级框架）、技术债累积（需要预留20%时间）、方向频繁变更（需要OKR对齐）。',
-      encourage: '产品是公司的根本。花在产品上的时间，永远值得。'
-    },
-    team: {
-      brief: '团队会议保持信息同步。但注意别让会议本身成为工作。',
-      detailed: '团队例会的目的是信息同步和问题解决，不是汇报工作。建议：1）控制时间；2）鼓励发现问题；3）重要决策要明确；4）会后要有明确行动项。',
-      encourage: '团队是你最宝贵的资产。好的团队例会能让大家更有方向感和凝聚力。'
-    },
-    finance: {
-      brief: '财务会议关系到公司命脉。现金流是企业的血液。',
-      detailed: '创始人必须懂财务：1）现金流比利润更重要；2）预算要量入为出；3）税务合规是底线；4）融资节奏要匹配业务发展。建议每月至少与财务深入沟通一次。',
-      encourage: '管好财务就是管好公司的命脉。不懂就问，这是你的责任。'
-    },
-    personal: {
-      brief: '创始人需要持续充电。身体是革命的本钱。',
-      detailed: '创始人往往是公司最稀缺的资源，你的状态决定公司的高度。建议：1）保持运动习惯；2）定期读书学习；3）建立导师/教练关系；4）给自己留出思考时间。',
-      encourage: '你很重要。你的身体、你的思维、你的状态，都是公司的资产。好好照顾自己。'
-    }
-  }
-  
-  // 构建规则
-  for (const cat of categories) {
-    rules.push({
-      category: cat.id,
-      keywords: cat.keywords,
-      importanceRange: importanceMap[cat.id] || { min: 70, max: 80 },
-      briefTip: tips[cat.id]?.brief || '',
-      detailedExplanation: tips[cat.id]?.detailed || '',
-      encouragement: tips[cat.id]?.encourage || ''
-    })
-  }
-  
-  return rules
-}
-
-/**
- * 根据知识库规则分析日程
- */
-function analyzeByRules(event: CalendarEvent, rules: CategoryRule[]): AnalysisResult | null {
-  const title = event.title
-  const description = event.description || ''
-  const fullText = title + ' ' + description
-  
-  // 匹配分类
-  for (const rule of rules) {
-    const matched = rule.keywords.some(keyword => 
-      fullText.includes(keyword)
-    )
-    
-    if (matched) {
-      // 根据匹配数量调整重要性
-      const matchCount = rule.keywords.filter(keyword => 
-        fullText.includes(keyword)
-      ).length
-      
-      const importance = Math.min(
-        rule.importanceRange.max,
-        rule.importanceRange.min + matchCount * 3
-      )
-      
+function parseAIResponse(text: string): Partial<AnalysisResult> {
+  try {
+    // 尝试提取 JSON
+    const jsonMatch = text.match(/\{[\s\S]*\}/)
+    if (jsonMatch) {
+      const parsed = JSON.parse(jsonMatch[0])
       return {
-        importance,
-        category: rule.category,
-        briefTip: rule.briefTip,
-        detailedExplanation: rule.detailedExplanation,
-        encouragement: rule.encouragement
+        importance: typeof parsed.importance === 'number' ? parsed.importance : 50,
+        category: parsed.category || 'other',
+        briefTip: parsed.briefTip || '',
+        detailedExplanation: parsed.detailedExplanation || '',
+        encouragement: parsed.encouragement || ''
       }
     }
+  } catch (e) {
+    console.error('解析AI响应失败:', e)
   }
-  
   return null
 }
 
 /**
- * 分析单个日程
+ * 用大模型分析单个日程
  */
-export async function analyzeEvent(event: CalendarEvent, knowledgeBase?: string): Promise<AnalysisResult> {
-  // 解析知识库
-  const rules = parseKnowledgeBase(knowledgeBase || '')
+async function analyzeWithAI(event: CalendarEvent): Promise<AnalysisResult> {
+  const prompt = buildAnalysisPrompt(event)
   
-  // 按规则分析
-  const result = analyzeByRules(event, rules)
-  
-  if (result) {
-    return result
+  try {
+    const response = await anthropic.messages.create({
+      model: 'claude-3-haiku-20240307',
+      max_tokens: 500,
+      temperature: 0.7,
+      system: '你是一个专注于创始人成长的AI助手，擅长分析日程对创始人的影响，给出有洞察的建议。',
+      messages: [
+        { role: 'user', content: prompt }
+      ]
+    })
+    
+    const text = response.content[0].type === 'text' 
+      ? response.content[0].text 
+      : ''
+    
+    const result = parseAIResponse(text)
+    
+    if (result && result.category) {
+      return {
+        importance: result.importance || 50,
+        category: result.category,
+        briefTip: result.briefTip || '这是一个需要关注的日程',
+        detailedExplanation: result.detailedExplanation || '请根据日程内容自行判断',
+        encouragement: result.encouragement || '相信你的判断'
+      }
+    }
+  } catch (error) {
+    console.error('AI分析失败:', error)
   }
   
-  // 如果没有匹配，返回默认分析
+  // AI 失败时返回默认分析
   return generateDefaultAnalysis(event)
 }
 
 /**
- * 默认分析（当没有匹配规则时）
+ * 默认分析（当AI不可用时）
  */
 function generateDefaultAnalysis(event: CalendarEvent): AnalysisResult {
-  const title = event.title
+  const title = event.title || ''
   
   return {
     importance: 50,
     category: 'other',
-    briefTip: '这个日程需要你自行判断重要性。',
+    briefTip: '这个日程需要你自行判断重要性',
     detailedExplanation: '根据日程内容，我无法准确判断重要性。你可以思考：1）这个会议是否影响公司关键决策？2）是否涉及重要合作伙伴？3）是否有时间敏感性？',
     encouragement: '相信你的直觉。你是最了解公司情况的人。'
   }
 }
 
 /**
- * 分析多个日程
+ * 分析单个日程 - 智能版本
  */
-export async function analyzeCalendar(events: CalendarEvent[], knowledgeBase?: string): Promise<Map<string, AnalysisResult>> {
-  const results = new Map<string, AnalysisResult>()
+export async function analyzeEvent(event: CalendarEvent, knowledgeBase?: string): Promise<AnalysisResult> {
+  // 检查是否有 API Key
+  if (!process.env.ANTHROPIC_API_KEY) {
+    console.warn('未配置 ANTHROPIC_API_KEY，使用默认分析')
+    return generateDefaultAnalysis(event)
+  }
   
-  for (const event of events) {
-    const analysis = await analyzeEvent(event, knowledgeBase)
-    results.set(event.id, analysis)
+  // 使用 AI 分析
+  return analyzeWithAI(event)
+}
+
+/**
+ * 批量分析日程 - 带并发控制
+ */
+export async function analyzeCalendar(
+  events: CalendarEvent[], 
+  knowledgeBase?: string,
+  onProgress?: (completed: number, total: number) => void
+): Promise<Map<string, AnalysisResult>> {
+  const results = new Map<string, AnalysisResult>()
+  const concurrency = 3 // 并发数
+  
+  for (let i = 0; i < events.length; i += concurrency) {
+    const batch = events.slice(i, i + concurrency)
+    const batchResults = await Promise.all(
+      batch.map(async (event) => {
+        const analysis = await analyzeEvent(event, knowledgeBase)
+        return { id: event.id, analysis }
+      })
+    )
+    
+    for (const { id, analysis } of batchResults) {
+      results.set(id, analysis)
+    }
+    
+    // 进度回调
+    if (onProgress) {
+      onProgress(Math.min(i + concurrency, events.length), events.length)
+    }
+    
+    // 避免 API 限流
+    if (i + concurrency < events.length) {
+      await new Promise(resolve => setTimeout(resolve, 1000))
+    }
   }
   
   return results
@@ -256,13 +248,13 @@ export function checkHealth(events: CalendarEvent[], days: number = 7): HealthRe
     suggestions.push('💡 产品是公司的根本，建议至少每两周安排一次产品评审。')
   }
   
-  // 新增：财务检查
+  // 财务检查
   if (!categoryCount['finance'] && totalEvents > 5) {
     issues.push('⚠️ 你最近没有与财务相关的会议')
     suggestions.push('💡 建议每月至少与财务深入沟通一次，关注现金流。')
   }
   
-  // 新增：个人成长检查
+  // 个人成长检查
   if (!categoryCount['personal'] && totalEvents > 10) {
     issues.push('⚠️ 你最近没有安排个人成长/休息时间')
     suggestions.push('💡 创始人需要持续充电，建议每周安排至少2小时的学习/运动时间。')
