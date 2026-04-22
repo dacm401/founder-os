@@ -46,7 +46,7 @@ export async function runFounderOS(userOpenId) {
         .filter((item) => item.analysis && item.analysis.importance >= 70)
         .sort((a, b) => b.analysis.importance - a.analysis.importance);
     // 4. 健康度检查
-    const health = checkHealth(events, 7);
+    const health = await checkHealth(events, 7);
     // 5. 生成消息
     let message = '';
     if (starredEvents.length > 0) {

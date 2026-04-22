@@ -63,7 +63,7 @@ async function main() {
         }
     }
     // 健康度
-    const health = checkHealth(mockEvents);
+    const health = await checkHealth(mockEvents);
     console.log(`🏥 健康度: ${health.score}/100`);
     console.log('\n' + '='.repeat(50));
     console.log('✅ 配置完成！');

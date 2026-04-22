@@ -35,6 +35,15 @@ export interface UserFeedback {
   timestamp: Date
 }
 
+export interface WeeklyStats {
+  weekStart: string
+  weekEnd: string
+  categoryCount: Record<string, number>
+  categoryTime: Record<string, number>
+  avgHealthScore: number
+  totalEvents: number
+}
+
 export interface StoredData {
   events: CalendarEvent[]
   analyses: Map<string, AnalysisResult>
