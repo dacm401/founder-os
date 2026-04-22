@@ -1,8 +1,62 @@
 import { CalendarEvent, AnalysisResult } from '../types'
 import OpenAI from 'openai'
 import { getTrendAnalysis } from '../storage/history'
+import { matchesIgnoredPattern } from '../storage/feedback'
 
-// 初始化大模型客户端（支持 OpenAI 兼容格式）
+// 创始人特有场景识别
+const FOUNDER_SCENARIOS = {
+  // 高价值场景
+  highValue: [
+    { pattern: /融资|投资|FA|BP|term sheet|TS/i, weight: 20, reason: '融资是公司生存线' },
+    { pattern: /合同|协议|条款|法律|ipr/i, weight: 15, reason: '法律文件需重点关注' },
+    { pattern: /CTO|技术负责人|核心.*招聘|关键技术/i, weight: 15, reason: '核心人才决定公司高度' },
+    { pattern: /产品.*评审|路线图|战略.*会/i, weight: 10, reason: '产品方向是CEO的核心职责' },
+    { pattern: /客户|签约|回款|收入/i, weight: 15, reason: '商业化是当前重点' },
+  ],
+  // 低价值/伪忙碌场景（需要降权）
+  lowValue: [
+    { pattern: /例行|周会|例会|同步.*会/i, weight: -10, reason: '可能是低效例会' },
+    { pattern: /接待|参观|参观.*公司/i, weight: -15, reason: '可能消耗时间但无产出' },
+    { pattern: /咨询|顾问.*聊|随便.*聊聊/i, weight: -15, reason: '目的不明确的沟通' },
+    { pattern: /培训.*参加|外部.*会议|行业.*会/i, weight: -5, reason: '可能不是核心事务' },
+    { pattern: /PR|媒体|采访/i, weight: -10, reason: '对外宣传优先级较低' },
+  ]
+}
+
+/**
+ * 识别创始人特有场景
+ */
+function detectFounderScenarios(title: string): { adjustments: { reason: string, delta: number }[], isPseudoBusy: boolean } {
+  const adjustments: { reason: string, delta: number }[] = []
+  let isPseudoBusy = false
+  
+  // 检查高价值场景
+  for (const scenario of FOUNDER_SCENARIOS.highValue) {
+    if (scenario.pattern.test(title)) {
+      adjustments.push({ reason: scenario.reason, delta: scenario.weight })
+    }
+  }
+  
+  // 检查伪忙碌场景
+  let lowValueCount = 0
+  for (const scenario of FOUNDER_SCENARIOS.lowValue) {
+    if (scenario.pattern.test(title)) {
+      adjustments.push({ reason: scenario.reason, delta: scenario.weight })
+      lowValueCount++
+    }
+  }
+  
+  // 如果同时有多个低价值特征，标记为伪忙碌
+  if (lowValueCount >= 2) {
+    isPseudoBusy = true
+  }
+  
+  return { adjustments, isPseudoBusy }
+}
+
+/**
+ * 初始化大模型客户端（支持 OpenAI 兼容格式）
+ */
 function getOpenAIClient() {
   const apiKey = process.env.OPENAI_API_KEY || process.env.SILICONFLOW_API_KEY
   const baseURL = process.env.SILICONFLOW_BASE_URL || 'https://api.siliconflow.cn/v1'
@@ -95,11 +149,14 @@ function detectStressIndicators(title: string, description?: string): { level: '
 }
 
 /**
- * 生成智能分析 Prompt - 增强版
+ * 生成智能分析 Prompt - Phase 2 增强版
+ * 包含创始人特有场景感知和伪忙碌识别
  */
 function buildAnalysisPrompt(event: CalendarEvent, context?: {
   thisWeekStats?: Record<string, number>
   recentStress?: boolean
+  ignoredPatterns?: string[]
+  trendData?: { thisWeek: number, lastWeek: number }
 }): string {
   const title = event.title || '无标题'
   const description = event.description || '无描述'
@@ -108,15 +165,42 @@ function buildAnalysisPrompt(event: CalendarEvent, context?: {
   // 提取隐含语义
   const semantics = extractImplicitSemantics(title)
   const stress = detectStressIndicators(title, description)
+  const founderScenarios = detectFounderScenarios(title)
   
   // 判断时间段
   const hour = startTime.getHours()
+  const dayOfWeek = startTime.getDay()
+  const isWeekend = dayOfWeek === 0 || dayOfWeek === 6
   const isMorning = hour >= 6 && hour < 12
   const isAfternoon = hour >= 12 && hour < 18
   const isEvening = hour >= 18 && hour < 22
   const isNight = hour >= 22 || hour < 6
   
   const timeSlot = isMorning ? '上午' : isAfternoon ? '下午' : isEvening ? '傍晚' : '深夜'
+  const dayName = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][dayOfWeek]
+  
+  // 用户忽略模式警告
+  let ignoredWarning = ''
+  if (context?.ignoredPatterns && context.ignoredPatterns.length > 0) {
+    const matched = context.ignoredPatterns.filter(p => title.toLowerCase().includes(p.toLowerCase()))
+    if (matched.length > 0) {
+      ignoredWarning = `\n⚠️ 注意：你之前标记过类似日程为"不感兴趣"(${matched.join(', ')})`
+    }
+  }
+  
+  // 趋势对比
+  let trendNote = ''
+  if (context?.trendData) {
+    const { thisWeek, lastWeek } = context.trendData
+    if (thisWeek > lastWeek * 1.3) {
+      trendNote = `\n📈 本周日程量较上周增长 ${Math.round((thisWeek / lastWeek - 1) * 100)}%，注意节奏`
+    }
+  }
+  
+  // 场景调整说明
+  const scenarioNotes = founderScenarios.adjustments
+    .map(a => `• ${a.reason} (${a.delta > 0 ? '+' : ''}${a.delta})`)
+    .join('\n')
   
   return `你是FounderOS，一个专注于创始人成长的AI助手。
 
@@ -128,14 +212,19 @@ function buildAnalysisPrompt(event: CalendarEvent, context?: {
 
 ## 日程信息
 - 标题：${title}
-- 时间：${timeSlot} ${startTime.toLocaleString('zh-CN', { weekday: 'long', hour: '2-digit', minute: '2-digit' })}
+- 时间：${dayName} ${timeSlot} ${startTime.toLocaleString('zh-CN', { hour: '2-digit', minute: '2-digit' })}
 - 描述：${description}
 - 隐含语义：${semantics.length > 0 ? semantics.join('、') : '无明显特征'}
 
+## 场景分析
+${scenarioNotes}
+${founderScenarios.isPseudoBusy ? '⚠️ 疑似"伪忙碌"日程：这类日程可能消耗时间但实际产出有限' : ''}
+${ignoredWarning}
+
 ## 当前状态
-- 时间段：${timeSlot}${isNight ? '（注意休息）' : ''}${isEvening ? '（注意工作时长）' : ''}
-- 压力信号：${stress.level === 'high' ? '高（' + stress.reasons.join('、') + '）' : stress.level === 'medium' ? '中等（' + stress.reasons.join('、') + '）' : '低'}
-${context?.thisWeekStats ? `- 本周事务分布：${JSON.stringify(context.thisWeekStats)}` : ''}
+- 时间段：${timeSlot}${isNight ? '🌙 注意休息' : ''}${isEvening ? '⏰ 注意工作时长' : ''}${isWeekend ? '📅 周末' : ''}
+- 压力信号：${stress.level === 'high' ? '🔴 高（' + stress.reasons.join('、') + '）' : stress.level === 'medium' ? '🟡 中等（' + stress.reasons.join('、') + '）' : '🟢 低'}
+${context?.thisWeekStats ? `- 本周事务分布：${JSON.stringify(context.thisWeekStats)}` : ''}${trendNote}
 
 ## 任务
 请分析这个日程，生成JSON格式的智能提醒：
@@ -147,7 +236,9 @@ ${context?.thisWeekStats ? `- 本周事务分布：${JSON.stringify(context.this
   "detailedExplanation": "详细建议(50-100字，针对这个具体日程)",
   "encouragement": "一句鼓励的话",
   "stressLevel": "high/medium/low",
-  "requiresFollowUp": true/false
+  "requiresFollowUp": true/false,
+  "isPseudoBusy": true/false,
+  "adjustments": ["调整原因1", "调整原因2"]
 }
 
 评分标准（重要性）：
@@ -156,18 +247,36 @@ ${context?.thisWeekStats ? `- 本周事务分布：${JSON.stringify(context.this
 - 50-69: 常规事务
 - <50: 被动响应或可推迟
 
+伪忙碌识别（isPseudoBusy）：
+- true: 可能是"参加了但不重要的会议"，如例行同步会、无明确目的的"聊聊"等
+- false: 有明确价值或产出的日程
+
 注意：
 - 直接返回JSON，不要其他内容
 - 如果日程信息太少无法分析，category设为"other"，importance设为50
 - 建议要具体针对这个日程和当前上下文
 - 风格：直接、有洞察、不说废话
-- 对于深夜日程，要提醒注意休息`
+- 对于深夜日程，要提醒注意休息
+- 如果疑似伪忙碌，在 briefTip 中委婉提示
+
+## 注意
+- 直接返回JSON，不要其他内容
+- 如果日程信息太少无法分析，category设为"other"，importance设为50
+- 建议要具体针对这个日程和当前上下文
+- 风格：直接、有洞察、不说废话
+- 对于深夜日程，要提醒注意休息
+`
 }
 
 /**
- * 解析大模型返回的 JSON
+ * 解析大模型返回的 JSON - Phase 2
  */
-function parseAIResponse(text: string): Partial<AnalysisResult & { stressLevel: string, requiresFollowUp: boolean }> {
+function parseAIResponse(text: string): Partial<AnalysisResult & { 
+  stressLevel: string, 
+  requiresFollowUp: boolean,
+  isPseudoBusy: boolean,
+  adjustments: string[]
+}> {
   try {
     // 尝试提取 JSON
     const jsonMatch = text.match(/\{[\s\S]*\}/)
@@ -180,20 +289,44 @@ function parseAIResponse(text: string): Partial<AnalysisResult & { stressLevel: 
         detailedExplanation: parsed.detailedExplanation || '',
         encouragement: parsed.encouragement || '',
         stressLevel: parsed.stressLevel || 'low',
-        requiresFollowUp: parsed.requiresFollowUp || false
+        requiresFollowUp: parsed.requiresFollowUp || false,
+        isPseudoBusy: parsed.isPseudoBusy || false,
+        adjustments: parsed.adjustments || []
       }
     }
   } catch (e) {
     console.error('解析AI响应失败:', e)
   }
   // 返回部分结果而不是 null，让调用方处理默认值
-  return { importance: 50, category: 'other', briefTip: '', detailedExplanation: '', encouragement: '', stressLevel: 'low', requiresFollowUp: false } as Partial<AnalysisResult & { stressLevel: string, requiresFollowUp: boolean }>
+  return { 
+    importance: 50, 
+    category: 'other', 
+    briefTip: '', 
+    detailedExplanation: '', 
+    encouragement: '', 
+    stressLevel: 'low', 
+    requiresFollowUp: false,
+    isPseudoBusy: false,
+    adjustments: []
+  } as Partial<AnalysisResult & { stressLevel: string, requiresFollowUp: boolean, isPseudoBusy: boolean, adjustments: string[] }>
 }
 
 /**
- * 用大模型分析单个日程
+ * 用大模型分析单个日程 - Phase 2
  */
-async function analyzeWithAI(event: CalendarEvent, context?: { thisWeekStats?: Record<string, number> }): Promise<AnalysisResult & { stressLevel: string, requiresFollowUp: boolean }> {
+async function analyzeWithAI(
+  event: CalendarEvent, 
+  context?: { 
+    thisWeekStats?: Record<string, number>
+    ignoredPatterns?: string[]
+    trendData?: { thisWeek: number, lastWeek: number }
+  }
+): Promise<AnalysisResult & { 
+  stressLevel: string, 
+  requiresFollowUp: boolean,
+  isPseudoBusy: boolean,
+  adjustments: string[]
+}> {
   const prompt = buildAnalysisPrompt(event, context)
   
   try {
@@ -222,7 +355,9 @@ async function analyzeWithAI(event: CalendarEvent, context?: { thisWeekStats?: R
         detailedExplanation: result.detailedExplanation || '请根据日程内容自行判断',
         encouragement: result.encouragement || '相信你的判断',
         stressLevel: result.stressLevel || 'low',
-        requiresFollowUp: result.requiresFollowUp || false
+        requiresFollowUp: result.requiresFollowUp || false,
+        isPseudoBusy: result.isPseudoBusy || false,
+        adjustments: result.adjustments || []
       }
     }
   } catch (error) {
@@ -234,15 +369,21 @@ async function analyzeWithAI(event: CalendarEvent, context?: { thisWeekStats?: R
 }
 
 /**
- * 默认分析（当AI不可用时）- 增强版
+ * 默认分析（当AI不可用时）- Phase 2 增强版
  */
-function generateDefaultAnalysis(event: CalendarEvent): AnalysisResult & { stressLevel: string, requiresFollowUp: boolean } {
+function generateDefaultAnalysis(event: CalendarEvent): AnalysisResult & { 
+  stressLevel: string, 
+  requiresFollowUp: boolean,
+  isPseudoBusy: boolean,
+  adjustments: string[]
+} {
   const title = event.title || ''
   const description = event.description || ''
   
   // 提取隐含语义
   const semantics = extractImplicitSemantics(title)
   const stress = detectStressIndicators(title, description)
+  const founderScenarios = detectFounderScenarios(title)
   
   // 判断时间段
   const hour = new Date(event.startTime).getHours()
@@ -322,28 +463,53 @@ function generateDefaultAnalysis(event: CalendarEvent): AnalysisResult & { stres
     detailedExplanation,
     encouragement: encouragements[Math.floor(Math.random() * encouragements.length)],
     stressLevel: stress.level,
-    requiresFollowUp: importance >= 70
+    requiresFollowUp: importance >= 70,
+    isPseudoBusy: founderScenarios.isPseudoBusy,
+    adjustments: founderScenarios.adjustments.map(a => a.reason)
   }
 }
 
 /**
- * 分析单个日程 - 智能版本
+ * 分析单个日程 - Phase 2 智能版本
  */
-export async function analyzeEvent(event: CalendarEvent): Promise<AnalysisResult & { stressLevel: string, requiresFollowUp: boolean }> {
+export async function analyzeEvent(event: CalendarEvent): Promise<AnalysisResult & { 
+  stressLevel: string, 
+  requiresFollowUp: boolean,
+  isPseudoBusy: boolean,
+  adjustments: string[]
+}> {
   // 检查是否有 API Key
   const apiKey = process.env.OPENAI_API_KEY || process.env.SILICONFLOW_API_KEY
   
-  // 获取本周统计作为上下文
-  let context: { thisWeekStats?: Record<string, number> } = {}
+  // 获取上下文
+  let context: { 
+    thisWeekStats?: Record<string, number>
+    ignoredPatterns?: string[]
+    trendData?: { thisWeek: number, lastWeek: number }
+  } = {}
+
   try {
     const trends = await getTrendAnalysis()
     if (trends.thisWeek) {
       context.thisWeekStats = trends.thisWeek.categoryCount
+      context.trendData = {
+        thisWeek: trends.thisWeek.totalEvents,
+        lastWeek: trends.lastWeek?.totalEvents || 0
+      }
     }
   } catch (e) {
     // 忽略历史数据获取失败
   }
-  
+
+  // 获取用户忽略模式
+  try {
+    const feedbackModule = await import('../storage/feedback')
+    const prefs = await feedbackModule.getUserPreferences()
+    context.ignoredPatterns = prefs.ignoredPatterns
+  } catch (e) {
+    // 忽略反馈数据获取失败
+  }
+
   if (!apiKey) {
     // 无 API Key 时使用增强的默认分析
     return generateDefaultAnalysis(event)
@@ -364,8 +530,8 @@ export type { WeeklyStats } from '../types'
 export async function analyzeCalendar(
   events: CalendarEvent[], 
   onProgress?: (completed: number, total: number) => void
-): Promise<Map<string, AnalysisResult & { stressLevel: string, requiresFollowUp: boolean }>> {
-  const results = new Map<string, AnalysisResult & { stressLevel: string, requiresFollowUp: boolean }>()
+): Promise<Map<string, AnalysisResult & { stressLevel: string, requiresFollowUp: boolean, isPseudoBusy: boolean, adjustments: string[] }>> {
+  const results = new Map<string, AnalysisResult & { stressLevel: string, requiresFollowUp: boolean, isPseudoBusy: boolean, adjustments: string[] }>()
   const concurrency = 3 // 并发数
   
   for (let i = 0; i < events.length; i += concurrency) {
